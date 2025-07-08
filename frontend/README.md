@@ -1,40 +1,25 @@
-# Transportation App Frontend
+# Login Screen UI
 
-This is the frontend for the Transportation App, built with React.
-
-## Project Structure
-
-- `public/` — Static files (HTML, favicon, etc.)
-- `src/` — Source code
-  - `assets/` — Images, icons, fonts
-  - `components/` — Reusable UI components
-  - `contexts/` — React Contexts for global state
-  - `hooks/` — Custom React hooks
-  - `pages/` — Main pages/screens
-  - `services/` — API calls and service logic
-  - `utils/` — Utility/helper functions
-  - `App.jsx` — Main app component
-  - `index.js` — Entry point
-- `tests/` — Test files
-
-## Getting Started
-
-1. Install dependencies:
-   ```sh
-   npm install
-   ```
-2. Start the development server:
-   ```sh
-   npm start
-   ```
-
-## Build
-
-To create a production build:
-```sh
-npm run build
-```
+This project is all about designing a Login Screen with a modern UI using the latest features offered by Flutter. In a total of three parts we will create a unique background using Glassmorphism, design appealing input fields for the best user experience and include eye-caching animations for a smooth feeling.
 
 ---
 
-For more details, see the project documentation in the `plans/` folder. 
+☕️ Creating these videos requires a lot of time and effort. If you enjoy my content you can buy me a coffee so I can produce more videos during the night:
+
+[**Support DebugErrorX**](https://www.buymeacoffee.com/debugerrorx)
+
+Thank you!
+
+---
+
+## [Watch it on YouTube](https://www.youtube.com/playlist?list=PLz3ulyTHbIEcUKeDqTAMPDsNu3VERlwm9)
+
+<br>
+
+![Login Screen UI](thumbnail.png)
+
+---
+
+You want more Flutter content? Check out my YouTube channel [**DebugErrorX**](https://www.youtube.com/channel/UCtY6vtwLqivmnquY1fg-BkQ)
+- [Recent Flutter Videos](https://www.youtube.com/channel/UCtY6vtwLqivmnquY1fg-BkQ/videos)
+- [Subscribe to DebugErrorX](https://www.youtube.com/channel/UCtY6vtwLqivmnquY1fg-BkQ?sub_confirmation=1)
