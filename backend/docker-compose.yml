@@ -1,0 +1,46 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: makroji_db_clean
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: PostgreSQL
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - makroji_net
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    networks:
+      - makroji_net
+
+  backend:
+    build: .
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_URL=postgresql://postgres:PostgreSQL@db:5432/makroji_db_clean
+      - REDIS_URL=redis://redis:6379/0
+      - GOOGLE_TRAFFIC_API_KEY=${GOOGLE_TRAFFIC_API_KEY}
+    depends_on:
+      - db
+      - redis
+    networks:
+      - makroji_net
+
+volumes:
+  pgdata:
+
+networks:
+  makroji_net:
+    driver: bridge 
