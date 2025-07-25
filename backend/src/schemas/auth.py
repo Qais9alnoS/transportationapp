@@ -44,6 +44,7 @@ class PasswordResetRequest(BaseModel):
 
 class PasswordReset(BaseModel):
     token: str
+    email: EmailStr
     new_password: str = Field(..., min_length=6, max_length=100)
 
 class ChangePassword(BaseModel):
@@ -64,4 +65,4 @@ class UserWithToken(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str
-    expires_in: int 
+    expires_in: int

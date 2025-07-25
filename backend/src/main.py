@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from src.routers import complaints, feedback
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 
 # إعداد ملف اللوغ
 log_file = 'server.log'
@@ -29,6 +30,15 @@ app = FastAPI(
     title="Makroji API",
     description="API for Makroji transportation app with authentication, friendship, and location sharing features",
     version="1.0.0"
+)
+
+# إضافة CORS middleware للسماح بالطلبات من أي مصدر
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # السماح لجميع المصادر
+    allow_credentials=True,
+    allow_methods=["*"],  # السماح لجميع الطرق
+    allow_headers=["*"],  # السماح لجميع الترويسات
 )
 
 # تفعيل static files للصور الشخصية
@@ -87,4 +97,4 @@ def custom_docs():
 
 @app.get("/api/v1/redoc")
 def custom_redoc():
-    return RedirectResponse(url="/redoc") 
+    return RedirectResponse(url="/redoc")

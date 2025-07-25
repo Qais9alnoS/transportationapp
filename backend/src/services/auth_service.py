@@ -40,7 +40,7 @@ class AuthService:
                 email=user_data.email,
                 full_name=user_data.full_name,
                 hashed_password=hashed_password,
-                is_verified=True,  # For now, we'll assume email verification is done
+                is_verified=False,  # المستخدم غير مؤكد حتى يتم التحقق من البريد الإلكتروني
                 is_admin=getattr(user_data, 'is_admin', False)
             )
             self.db.add(db_user)
@@ -165,4 +165,4 @@ class AuthService:
         
         self.db.commit()
         self.db.refresh(user)
-        return user 
+        return user

@@ -2,6 +2,8 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:ionicons/ionicons.dart';
 import 'package:login_screen/utils/helper_functions.dart';
+import 'package:provider/provider.dart';
+import '../../../providers/auth_provider.dart';
 import '../animations/change_screen_animation.dart';
 import 'bottom_text.dart';
 import 'top_text.dart';
@@ -121,6 +123,10 @@ class _LoginContentState extends State<LoginContent>
         height: 48,
         child: ElevatedButton(
           onPressed: () {
+            // Prevent multiple button presses
+            FocusScope.of(context).unfocus();
+            final authProvider = Provider.of<AuthProvider>(context, listen: false);
+            
             setState(() {
               if (title == 'Log In') {
                 final trimmedLoginEmail = loginEmailController.text.trim();
@@ -145,10 +151,52 @@ class _LoginContentState extends State<LoginContent>
                 }
 
                 if (loginEmailError == null && loginPasswordError == null) {
-                  Navigator.of(context).pushNamed('/map');
+                  // Show loading indicator
+                  showDialog(
+                    context: context,
+                    barrierDismissible: false,
+                    builder: (context) => const Center(child: CircularProgressIndicator()),
+                  );
+                  
+                  try {
+                    // Call login without await
+                    authProvider.login(
+                      trimmedLoginEmail,
+                      loginPasswordController.text,
+                    ).then((success) {
+                      // Close loading dialog
+                      Navigator.of(context).pop();
+                      
+                      if (success) {
+                        Navigator.of(context).pushReplacementNamed('/map');
+                      } else {
+                        // Show error message
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(authProvider.error ?? 'Login failed')),
+                        );
+                      }
+                    }).catchError((e) {
+                      // Close loading dialog
+                      Navigator.of(context).pop();
+                      // Show error message
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text(e.toString())),
+                      );
+                    });
+                  } catch (e) {
+                    // This catch block will handle synchronous errors
+                    // Close loading dialog
+                    Navigator.of(context).pop();
+                    // Show error message
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(e.toString())),
+                    );
+                  }
                 }
               } else {
-                if (signUpNameController.text.isEmpty) {
+                // Sign Up logic
+                final fullName = signUpNameController.text.trim();
+                if (fullName.isEmpty) {
                   signUpNameError = 'fill the field';
                   signUpNameController.clear();
                 } else {
@@ -179,11 +227,57 @@ class _LoginContentState extends State<LoginContent>
                 if (signUpNameError == null &&
                     signUpEmailError == null &&
                     signUpPasswordError == null) {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (context) => VerifyEmailScreen(email: trimmedSignUpEmail),
-                    ),
+                  
+                  // Show loading indicator
+                  showDialog(
+                    context: context,
+                    barrierDismissible: false,
+                    builder: (context) => const Center(child: CircularProgressIndicator()),
                   );
+                  
+                  try {
+                    // Generate a username from email (before @ symbol)
+                    final username = trimmedSignUpEmail.split('@')[0];
+                    
+                    // Call register without await
+                    authProvider.register(
+                      username: username,
+                      email: trimmedSignUpEmail,
+                      password: signUpPasswordController.text,
+                      fullName: fullName,
+                    ).then((success) {
+                      // Close loading dialog
+                      Navigator.of(context).pop();
+                      
+                      if (success) {
+                        Navigator.of(context).pushReplacement(
+                          MaterialPageRoute(
+                            builder: (context) => VerifyEmailScreen(email: trimmedSignUpEmail),
+                          ),
+                        );
+                      } else {
+                        // Show error message
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(authProvider.error ?? 'Registration failed')),
+                        );
+                      }
+                    }).catchError((e) {
+                      // Close loading dialog
+                      Navigator.of(context).pop();
+                      // Show error message
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text(e.toString())),
+                      );
+                    });
+                  } catch (e) {
+                    // This catch block will handle synchronous errors
+                    // Close loading dialog
+                    Navigator.of(context).pop();
+                    // Show error message
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(e.toString())),
+                    );
+                  }
                 }
               }
             });
@@ -278,8 +372,44 @@ class _LoginContentState extends State<LoginContent>
             width: 130,
             height: 42,
             child: ElevatedButton.icon(
-              onPressed: () {
-                // TODO: Implement Google login
+              onPressed: () async {
+                final authProvider = Provider.of<AuthProvider>(context, listen: false);
+                
+                // Show loading indicator
+                showDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (context) => const Center(child: CircularProgressIndicator()),
+                );
+                
+                try {
+                  // TODO: Implement Google Sign-In to get idToken
+                  // For now, we'll just show a message that this is not implemented
+                  Navigator.of(context).pop(); // Close loading dialog
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Google login not implemented yet')),
+                  );
+                  
+                  // When implemented, it would look like this:
+                  // final googleSignIn = GoogleSignIn();
+                  // final googleUser = await googleSignIn.signIn();
+                  // final googleAuth = await googleUser?.authentication;
+                  // final idToken = googleAuth?.idToken;
+                  // 
+                  // if (idToken != null) {
+                  //   final success = await authProvider.loginWithGoogle(idToken);
+                  //   if (success) {
+                  //     Navigator.of(context).pushReplacementNamed('/map');
+                  //   }
+                  // }
+                } catch (e) {
+                  // Close loading dialog
+                  Navigator.of(context).pop();
+                  // Show error message
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(e.toString())),
+                  );
+                }
               },
               icon: Image.asset(
                 'assets/images/google.png',

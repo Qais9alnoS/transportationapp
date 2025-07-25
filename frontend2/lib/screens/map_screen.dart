@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:location/location.dart' as location_package;
-import 'search_destination_screen.dart';
-import 'route_options_screen.dart';
+import 'package:provider/provider.dart';
+import '../providers/auth_provider.dart';
+import 'friends_page.dart';
+import 'login_screen/login_screen.dart';
 import 'dart:ui';
 import 'dart:math';
 
@@ -15,12 +17,9 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
-  // Map controller to interact with the map programmatically if needed
   final mapController = MapController();
-
-  // Damascus coordinates
   final LatLng damascusCenter = const LatLng(33.5138, 36.2765);
-  final double damascusZoom = 13.0; // Zoom level suitable for city view
+  final double damascusZoom = 13.0;
 
   location_package.LocationData? _currentLocation;
   bool _serviceEnabled = false;
@@ -29,10 +28,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
   LatLng? _selectedPin;
   LatLng? _startingPoint;
-  String? _selectedRouteOption; // 'fastest', 'fewest', 'cheapest'
-  List<RouteData> _availableRoutes = [];
-  RouteData? _selectedRoute;
-  final bool offlineMode = false; // Set to true to demo offline visuals
+  String? _selectedRouteOption;
+  RouteData? _selectedRoute; // Only one route now
+  final bool offlineMode = false;
+
+  // Friend location tracking
+  Friend? _locatedFriend;
 
   // Animation controllers
   late AnimationController _searchAnimationController;
@@ -42,6 +43,10 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   late AnimationController _routeTransitionController;
   late AnimationController _favoriteDialogController;
   late AnimationController _notificationController;
+  late AnimationController
+      _locationMoveController; // New for smooth location transition
+
+  // Animations
   late Animation<double> _searchWidthAnimation;
   late Animation<double> _searchHeightAnimation;
   late Animation<double> _searchOpacityAnimation;
@@ -72,10 +77,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   final FocusNode _searchFocusNode = FocusNode();
   final FocusNode _favoriteNameFocusNode = FocusNode();
 
-  // Animation controller for pin/buttons
   final GlobalKey<_PinWithAnimatedButtonsState> _pinAnimKey = GlobalKey();
 
-  // All available locations for search - renamed to avoid conflict
   final List<SearchLocationData> _allLocations = [
     SearchLocationData('Home', LatLng(33.5138, 36.2765)),
     SearchLocationData('Work', LatLng(33.5200, 36.2800)),
@@ -94,7 +97,9 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       return _allLocations.take(3).toList();
     }
     return _allLocations
-        .where((location) => location.name.toLowerCase().contains(_searchController.text.toLowerCase()))
+        .where((location) => location.name
+            .toLowerCase()
+            .contains(_searchController.text.toLowerCase()))
         .take(3)
         .toList();
   }
@@ -105,45 +110,37 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       return;
     }
 
-    // Collapse search if expanded
     if (_isSearchExpanded) {
       _collapseSearch();
     }
 
-    // Close side menu if open
     if (_isSideMenuOpen) {
       _closeSideMenu();
     }
 
-    // Close bottom panel if open
     if (_isBottomPanelOpen) {
       _closeBottomPanel();
     }
 
-    // Close favorite dialog if open
     if (_showFavoriteDialog) {
       _closeFavoriteDialog();
     }
 
-    // Reset animation immediately when clicking a new place
     _pinAnimKey.currentState?.resetAnimation();
 
     setState(() {
       _selectedPin = latlng;
       _selectedRouteOption = null;
-      _availableRoutes = [];
       _selectedRoute = null;
       _isTransitioningToRoutes = false;
     });
 
-    // Start animation after the widget is rebuilt with new position
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _pinAnimKey.currentState?.playForward();
     });
   }
 
   void _onMapMove(MapPosition pos, bool hasGesture) {
-    // Don't hide pin and routes when a route option is selected
     if (_selectedRouteOption != null) return;
 
     if (_selectedPin != null && hasGesture) {
@@ -151,7 +148,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         setState(() {
           _selectedPin = null;
           _selectedRouteOption = null;
-          _availableRoutes = [];
           _selectedRoute = null;
           _isTransitioningToRoutes = false;
         });
@@ -160,7 +156,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   }
 
   void _onSelectRouteOption(String option) {
-    // Check if starting point is set
     if (_startingPoint == null && _currentLocation == null) {
       _showStartingPointError();
       return;
@@ -171,16 +166,14 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       _isTransitioningToRoutes = true;
     });
 
-    // Start transition animation
     _routeTransitionController.forward().then((_) {
       setState(() {
-        _availableRoutes = _generateRoutes(option);
-        _selectedRoute = null;
+        _selectedRoute =
+            _generateSingleRoute(option); // Generate only one route
       });
 
-      if (_isBottomPanelOpen) {
-        _closeBottomPanel();
-      }
+      // Automatically open bottom panel with route details
+      _openBottomPanel();
     });
   }
 
@@ -192,41 +185,33 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     );
   }
 
-  void _onRouteSelected(RouteData route) {
-    setState(() {
-      _selectedRoute = route;
-    });
-    _openBottomPanel();
-  }
-
   void _onGo() async {
     if (_selectedRoute == null) return;
 
-    // Close bottom panel and reset state
-    _closeBottomPanel();
-    setState(() {
-      _selectedPin = null;
-      _selectedRouteOption = null;
-      _availableRoutes = [];
-      _selectedRoute = null;
-      _isTransitioningToRoutes = false;
+    // Smoothly slide down the panel
+    _bottomPanelController
+        .animateTo(0.0,
+            duration: Duration(milliseconds: 500), curve: Curves.easeInOutCubic)
+        .then((_) {
+      setState(() {
+        _isBottomPanelOpen = false;
+        _selectedPin = null;
+        _selectedRouteOption = null;
+        _selectedRoute = null;
+        _isTransitioningToRoutes = false;
+      });
     });
 
-    // Navigate or perform go action
     print('Going with route: ${_selectedRoute!.name}');
   }
 
   void _onSetStartingPoint() {
     if (!_isSelectingStartingPoint) {
-      // Start selection mode
       setState(() {
         _isSelectingStartingPoint = true;
         _startingButtonText = "Select";
       });
-
-      // Remove this notification call entirely
     } else {
-      // Cancel selection mode
       _cancelStartingPointSelection();
     }
   }
@@ -237,8 +222,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       _isSelectingStartingPoint = false;
       _startingButtonText = "Cancel";
     });
-
-    // Remove this notification call entirely
   }
 
   void _cancelStartingPointSelection() {
@@ -274,7 +257,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   void _addFavoriteLocation() {
     final name = _favoriteNameController.text.trim();
     if (name.isNotEmpty) {
-      // Here you would add the logic to save to database
       print('Adding favorite: $name at ${_selectedPin.toString()}');
 
       _showCustomNotification(
@@ -287,38 +269,31 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     }
   }
 
-  List<RouteData> _generateRoutes(String type) {
-    // Generate mock routes based on type
+  // Generate only one route instead of multiple
+  RouteData _generateSingleRoute(String type) {
     final random = Random();
-    List<RouteData> routes = [];
-
-    for (int i = 0; i < 3; i++) {
-      routes.add(RouteData(
-        name: '$type Route ${i + 1}',
-        duration: '${15 + random.nextInt(20)} min',
-        distance: '${2 + random.nextInt(8)}.${random.nextInt(10)} km',
-        cost: '\$${3 + random.nextInt(7)}',
-        points: _generateRoutePoints(i),
-        color: _getRouteColor(i),
-      ));
-    }
-
-    return routes;
+    return RouteData(
+      name: '$type Route',
+      duration: '${15 + random.nextInt(20)} min',
+      distance: '${2 + random.nextInt(8)}.${random.nextInt(10)} km',
+      cost: '\$${3 + random.nextInt(7)}',
+      points: _generateRoutePoints(0),
+      color: Color(0xFF06332E),
+    );
   }
 
   List<LatLng> _generateRoutePoints(int routeIndex) {
-    // Generate mock route points
-    final start = _startingPoint ?? (_currentLocation != null
-        ? LatLng(_currentLocation!.latitude!, _currentLocation!.longitude!)
-        : damascusCenter);
+    final start = _startingPoint ??
+        (_currentLocation != null
+            ? LatLng(_currentLocation!.latitude!, _currentLocation!.longitude!)
+            : damascusCenter);
     final end = _selectedPin!;
 
     List<LatLng> points = [start];
 
-    // Add some intermediate points for visual effect
     final latDiff = (end.latitude - start.latitude) / 4;
     final lngDiff = (end.longitude - start.longitude) / 4;
-    final random = Random(routeIndex); // Use seed for consistent routes
+    final random = Random(routeIndex);
 
     for (int i = 1; i < 4; i++) {
       points.add(LatLng(
@@ -329,15 +304,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
     points.add(end);
     return points;
-  }
-
-  Color _getRouteColor(int index) {
-    final colors = [
-      Color(0xFF06332E),
-      Color(0xFF0B664E),
-      Color(0xFF8F8262),
-    ];
-    return colors[index % colors.length];
   }
 
   void _expandSearch() {
@@ -352,7 +318,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
   void _collapseSearch() {
     _searchFocusNode.unfocus();
-    _searchAnimationController.reverse().then((_) {
+    // Faster fade away animation - reduced duration
+    _searchAnimationController.reverse(from: 1.0).then((_) {
       setState(() {
         _isSearchExpanded = false;
       });
@@ -389,12 +356,93 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     });
   }
 
+  // Smooth location transition
+  void _moveToUserLocation() {
+    final LatLng? userLatLng = _currentLocation != null
+        ? LatLng(_currentLocation!.latitude!, _currentLocation!.longitude!)
+        : null;
+
+    if (userLatLng != null) {
+      // Get current map center and zoom
+      final currentCenter = mapController.center;
+      final currentZoom = mapController.zoom;
+      final targetZoom = 15.0;
+
+      // Animation duration
+      const animationDuration = Duration(milliseconds: 800);
+
+      // Create animation controllers for smooth transition
+      AnimationController latController = AnimationController(
+        duration: animationDuration,
+        vsync: this,
+      );
+
+      AnimationController lngController = AnimationController(
+        duration: animationDuration,
+        vsync: this,
+      );
+
+      AnimationController zoomController = AnimationController(
+        duration: animationDuration,
+        vsync: this,
+      );
+
+      // Create animations
+      Animation<double> latAnimation = Tween<double>(
+        begin: currentCenter.latitude,
+        end: userLatLng.latitude,
+      ).animate(CurvedAnimation(
+        parent: latController,
+        curve: Curves.easeInOut,
+      ));
+
+      Animation<double> lngAnimation = Tween<double>(
+        begin: currentCenter.longitude,
+        end: userLatLng.longitude,
+      ).animate(CurvedAnimation(
+        parent: lngController,
+        curve: Curves.easeInOut,
+      ));
+
+      Animation<double> zoomAnimation = Tween<double>(
+        begin: currentZoom,
+        end: targetZoom,
+      ).animate(CurvedAnimation(
+        parent: zoomController,
+        curve: Curves.easeInOut,
+      ));
+
+      // Add listeners to update map position
+      void updateMap() {
+        mapController.move(
+          LatLng(latAnimation.value, lngAnimation.value),
+          zoomAnimation.value,
+        );
+      }
+
+      latController.addListener(updateMap);
+      lngController.addListener(updateMap);
+      zoomController.addListener(updateMap);
+
+      // Start animations
+      latController.forward();
+      lngController.forward();
+      zoomController.forward();
+
+      // Dispose controllers after animation completes
+      Future.delayed(animationDuration, () {
+        latController.dispose();
+        lngController.dispose();
+        zoomController.dispose();
+      });
+    }
+  }
+
   void _onSearchSubmitted(String query) async {
     if (query.trim().isEmpty) return;
 
-    // Find matching location
     final matchingLocation = _allLocations.firstWhere(
-          (location) => location.name.toLowerCase() == query.toLowerCase(),
+      (location) => location.name.toLowerCase() == query.toLowerCase(),
       orElse: () => _allLocations.first,
     );
 
@@ -410,20 +458,17 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   }
 
   void _placePin(LatLng location) {
-    // Reset animation immediately
     _pinAnimKey.currentState?.resetAnimation();
 
     setState(() {
       _selectedPin = location;
       _selectedRouteOption = null;
-      _availableRoutes = [];
       _selectedRoute = null;
       _isTransitioningToRoutes = false;
     });
 
     mapController.move(location, damascusZoom);
 
-    // Start animation after the widget is rebuilt with new position
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _pinAnimKey.currentState?.playForward();
     });
@@ -438,7 +483,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     });
 
     _notificationController.forward().then((_) {
-      Future.delayed(Duration(seconds: 6), () { // Changed from 3 to 6 seconds
+      Future.delayed(Duration(seconds: 6), () {
         _hideCustomNotification();
       });
     });
@@ -452,13 +497,50 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     });
   }
 
+  // Navigation functions
+  void _navigateToFriends() async {
+    _closeSideMenu();
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => FriendsPage()),
+    );
+
+    // Check if a friend was returned (located)
+    if (result != null && result is Friend) {
+      // Add friend marker to the map
+      setState(() {
+        // Store the friend for marker display
+        _locatedFriend = result;
+      });
+
+      // Move map to friend's location
+      mapController.move(result.location, 15.0);
+    }
+  }
+
+  void _signOut() async {
+    // Close the side menu first
+    _closeSideMenu();
+
+    // Use AuthProvider to sign out
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    await authProvider.logout();
+
+    // Navigate to login screen and remove all previous routes
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (context) => const LoginScreen()),
+      (route) => false,
+    );
+  }
+
   @override
   void initState() {
     super.initState();
     _initLocation();
     _initAnimationControllers();
     _searchController.addListener(() {
-      setState(() {}); // Rebuild to update filtered locations and search bar size
+      setState(() {});
     });
   }
 
@@ -471,7 +553,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   void _initAnimationControllers() {
     _searchAnimationController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 800), // Smoother, more alive
+      duration: const Duration(milliseconds: 400), // Faster fade away
     );
 
     _generalAnimationController = AnimationController(
@@ -503,24 +585,27 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       vsync: this,
       duration: const Duration(milliseconds: 600),
     );
+
+    _locationMoveController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
   }
 
   void _initAnimations() {
-    // Get screen width safely after dependencies are available
     final screenWidth = MediaQuery.of(context).size.width;
 
     _searchWidthAnimation = Tween<double>(
-      begin: 300.0, // Increased base width
-      end: screenWidth - 80, // Leave space for menu button
+      begin: 300.0,
+      end: screenWidth - 80,
     ).animate(CurvedAnimation(
       parent: _searchAnimationController,
-      curve: Curves.easeOutBack, // More alive animation
+      curve: Curves.easeOutBack,
     ));
 
-    // Dynamic height based on suggestions count with animation - Fixed calculation
     _searchHeightAnimation = Tween<double>(
       begin: 60.0,
-      end: 220.0, // Fixed maximum height
+      end: 350.0,
     ).animate(CurvedAnimation(
       parent: _searchAnimationController,
       curve: Curves.elasticOut,
@@ -606,7 +691,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       curve: Curves.easeOut,
     ));
 
-    // Start general animations
     _generalAnimationController.forward();
   }
 
@@ -619,7 +703,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     _permissionGranted = await _location.hasPermission();
     if (_permissionGranted != location_package.PermissionStatus.granted) {
       _permissionGranted = await _location.requestPermission();
-      if (_permissionGranted != location_package.PermissionStatus.granted) return;
+      if (_permissionGranted != location_package.PermissionStatus.granted)
+        return;
     }
     final loc = await _location.getLocation();
     setState(() {
@@ -641,6 +726,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     _routeTransitionController.dispose();
     _favoriteDialogController.dispose();
     _notificationController.dispose();
+    _locationMoveController.dispose();
     _searchController.dispose();
     _favoriteNameController.dispose();
     _searchFocusNode.dispose();
@@ -651,7 +737,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     final LatLng? userLatLng = _currentLocation != null
-        ? LatLng(_currentLocation!.latitude ?? damascusCenter.latitude, _currentLocation!.longitude ?? damascusCenter.longitude)
+        ? LatLng(_currentLocation!.latitude ?? damascusCenter.latitude,
+            _currentLocation!.longitude ?? damascusCenter.longitude)
         : null;
     return Scaffold(
       body: Stack(
@@ -673,16 +760,16 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 subdomains: const ['a', 'b', 'c'],
               ),
 
-              // Route lines
-              if (_availableRoutes.isNotEmpty)
+              // Single route line
+              if (_selectedRoute != null)
                 PolylineLayer(
-                  polylines: _availableRoutes.map((route) => Polyline(
-                    points: route.points,
-                    strokeWidth: _selectedRoute == route ? 6.0 : 4.0,
-                    color: _selectedRoute == route
-                        ? route.color.withOpacity(0.9)
-                        : route.color.withOpacity(0.6),
-                  )).toList(),
+                  polylines: [
+                    Polyline(
+                      points: _selectedRoute!.points,
+                      strokeWidth: 6.0,
+                      color: _selectedRoute!.color.withOpacity(0.9),
+                    ),
+                  ],
                 ),
 
               if (userLatLng != null)
@@ -707,10 +794,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                                 begin: Alignment.topLeft,
                                 end: Alignment.bottomRight,
                               ),
-                              border: Border.all(color: Color(0xFFF5E9D0), width: 4),
+                              border: Border.all(
+                                  color: Color(0xFFF5E9D0), width: 4),
                             ),
                             child: const Center(
-                              child: Icon(Icons.my_location, color: Color(0xFFF5E9D0), size: 20),
+                              child: Icon(Icons.my_location,
+                                  color: Color(0xFFF5E9D0), size: 20),
                             ),
                           ),
                         ),
@@ -719,7 +808,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                   ],
                 ),
 
-              // Starting point marker with green gradient pin
               if (_startingPoint != null)
                 MarkerLayer(
                   markers: [
@@ -727,12 +815,11 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                       point: _startingPoint!,
                       width: 48,
                       height: 48,
-                      alignment: Alignment(0.0, -0.7), // Align tip to location
+                      alignment: Alignment(0.0, -0.7),
                       child: Container(
                         child: Stack(
                           alignment: Alignment.center,
                           children: [
-                            // Pin shadow
                             Positioned(
                               top: 2,
                               child: Container(
@@ -744,7 +831,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                                 ),
                               ),
                             ),
-                            // Green gradient pin
                             ShaderMask(
                               shaderCallback: (bounds) => LinearGradient(
                                 colors: [
@@ -774,15 +860,13 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                       point: _selectedPin!,
                       width: 400,
                       height: 280,
-                      alignment: Alignment(0.0, 0.35), // Align tip exactly to clicked location
+                      alignment: Alignment(0.0, 0.35),
                       child: _PinWithAnimatedButtons(
                         key: _pinAnimKey,
                         selected: _selectedRouteOption,
                         onSelect: _onSelectRouteOption,
                         onGo: _onGo,
                         onMakeFavorite: _onMakeFavorite,
-                        availableRoutes: _availableRoutes,
-                        onRouteSelected: _onRouteSelected,
                         selectedRoute: _selectedRoute,
                         isTransitioning: _isTransitioningToRoutes,
                         transitionAnimation: _routeTransitionAnimation,
@@ -791,57 +875,103 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                   ],
                 ),
 
-              // Route selection markers
-              if (_availableRoutes.isNotEmpty)
+              // Friend location marker
+              if (_locatedFriend != null)
                 MarkerLayer(
-                  markers: _availableRoutes.asMap().entries.map((entry) {
-                    final index = entry.key;
-                    final route = entry.value;
-                    final midPoint = route.points[route.points.length ~/ 2];
-
-                    return Marker(
-                      point: midPoint,
-                      width: 60,
-                      height: 40,
-                      child: GestureDetector(
-                        onTap: () => _onRouteSelected(route),
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: _selectedRoute == route
-                                ? route.color.withOpacity(0.9)
-                                : route.color.withOpacity(0.7),
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(
-                              color: Color(0xFFF5E9D0),
-                              width: _selectedRoute == route ? 3 : 2,
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black26,
-                                blurRadius: 4,
-                                offset: Offset(0, 2),
+                  markers: [
+                    Marker(
+                      point: _locatedFriend!.location,
+                      width: 100,
+                      height: 100,
+                      alignment: Alignment(0.0, 0.0),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 50,
+                            height: 50,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Color(0xFF06332E),
+                              border: Border.all(
+                                color: Color(0xFFF5E9D0),
+                                width: 2,
                               ),
-                            ],
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.3),
+                                  blurRadius: 6,
+                                  offset: Offset(0, 3),
+                                ),
+                              ],
+                            ),
+                            child: ClipOval(
+                              child: Image.network(
+                                _locatedFriend!.profilePicture,
+                                fit: BoxFit.cover,
+                                errorBuilder: (context, error, stackTrace) {
+                                  return Container(
+                                    color: Color(0xFFF5E9D0).withOpacity(0.3),
+                                    child: Icon(
+                                      Icons.person,
+                                      color: Color(0xFF06332E),
+                                      size: 24,
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
                           ),
-                          child: Center(
+                          Container(
+                            padding: EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
+                            margin: EdgeInsets.only(top: 8),
+                            constraints: BoxConstraints(
+                              minWidth: 40,
+                              maxWidth: 120,
+                            ),
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: [
+                                  Color(0xFF06332E),
+                                  Color(0xFF0B664E),
+                                ],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                              ),
+                              borderRadius: BorderRadius.circular(12),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.2),
+                                  blurRadius: 4,
+                                  offset: Offset(0, 2),
+                                ),
+                              ],
+                              border: Border.all(
+                                color: Color(0xFFF5E9D0),
+                                width: 1.5,
+                              ),
+                            ),
                             child: Text(
-                              '${index + 1}',
+                              _locatedFriend!.name
+                                  .split(' ')[0], // Just the first name
+                              textAlign: TextAlign.center,
                               style: TextStyle(
                                 color: Color(0xFFF5E9D0),
+                                fontSize: 12,
                                 fontWeight: FontWeight.bold,
-                                fontSize: 16,
                               ),
                             ),
                           ),
-                        ),
+                        ],
                       ),
-                    );
-                  }).toList(),
+                    ),
+                  ],
                 ),
             ],
           ),
 
-          // Enhanced Search bubble with all green gradient
+          // Enhanced Search bar with faster animation
           Positioned(
             top: 50,
             left: 16,
@@ -851,18 +981,14 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 return LayoutBuilder(
                   builder: (context, constraints) {
                     final maxWidth = MediaQuery.of(context).size.width - 80;
-                    final currentWidth = _isSearchExpanded
-                        ? (maxWidth * 0.95) // Better proportion
-                        : 300.0; // Slightly larger collapsed width
+                    final currentWidth =
+                        _isSearchExpanded ? (maxWidth * 0.95) : 300.0;
 
-                    // Dynamic height calculation with animation
                     final suggestionsCount = _filteredLocations.length;
                     final targetHeight = _isSearchExpanded
-                        ? (60.0 + (suggestionsCount * 52.0) + 28.0).clamp(60.0, 220.0)
-                        : 60.0;
-                    final dynamicHeight = _isSearchExpanded
-                        ? targetHeight
-                        : 60.0;
+                        ? (90.0 + (suggestionsCount * 70.0) + 50.0)
+                            .clamp(90.0, 600.0)
+                        : 70.0;
 
                     return GestureDetector(
                       onTap: _isSearchExpanded ? null : _expandSearch,
@@ -871,16 +997,23 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                         child: BackdropFilter(
                           filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
                           child: AnimatedContainer(
-                            duration: Duration(milliseconds: 300), // Smooth size animation
+                            duration:
+                                Duration(milliseconds: 200), // Faster animation
                             curve: Curves.easeOutCubic,
                             width: currentWidth,
-                            height: dynamicHeight,
-                            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
+                            height: targetHeight,
+                            clipBehavior: Clip.hardEdge,
+                            constraints: BoxConstraints(
+                              minHeight: 70.0,
+                              maxHeight: 600.0,
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 24, vertical: 20),
                             decoration: BoxDecoration(
                               gradient: LinearGradient(
                                 colors: [
-                                  Color(0xFF0B664E).withOpacity(0.9), // Darker green
-                                  Color(0xFF06332E).withOpacity(0.85), // Lighter green
+                                  Color(0xFF0B664E).withOpacity(0.9),
+                                  Color(0xFF06332E).withOpacity(0.85),
                                 ],
                                 begin: Alignment.topLeft,
                                 end: Alignment.bottomRight,
@@ -894,129 +1027,196 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                                 ),
                               ],
                               border: Border.all(
-                                  color: Color(0xFF0F7A5A), // Green edge
-                                  width: 1.5
-                              ),
+                                  color: Color(0xFF0F7A5A), width: 1.5),
                             ),
-                            child: _isSearchExpanded
-                                ? Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Row(
-                                  children: [
-                                    Icon(Icons.search, color: Color(0xFFF5E9D0)),
-                                    SizedBox(width: 10),
-                                    Expanded(
-                                      child: AnimatedOpacity(
-                                        opacity: _searchOpacityAnimation.value,
-                                        duration: Duration(milliseconds: 400),
-                                        child: TextField(
-                                          controller: _searchController,
-                                          focusNode: _searchFocusNode,
-                                          onSubmitted: _onSearchSubmitted,
+                            child: SingleChildScrollView(
+                              physics: NeverScrollableScrollPhysics(),
+                              child: _isSearchExpanded
+                                  ? Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Icon(Icons.search,
+                                                color: Color(0xFFF5E9D0)),
+                                            SizedBox(width: 10),
+                                            Expanded(
+                                              child: AnimatedOpacity(
+                                                opacity: _searchOpacityAnimation
+                                                    .value,
+                                                duration: Duration(
+                                                    milliseconds:
+                                                        200), // Faster
+                                                child: TextField(
+                                                  controller: _searchController,
+                                                  focusNode: _searchFocusNode,
+                                                  onSubmitted:
+                                                      _onSearchSubmitted,
+                                                  style: TextStyle(
+                                                    fontSize: 16,
+                                                    color: Color(0xFFF5E9D0),
+                                                    fontFamily: 'Montserrat',
+                                                    fontWeight: FontWeight.w500,
+                                                  ),
+                                                  decoration: InputDecoration(
+                                                    hintText:
+                                                        'Where do you want to go?',
+                                                    hintStyle: TextStyle(
+                                                      color: Color(0xFFF5E9D0)
+                                                          .withOpacity(0.7),
+                                                    ),
+                                                    border: InputBorder.none,
+                                                    contentPadding:
+                                                        EdgeInsets.zero,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                            AnimatedOpacity(
+                                              opacity:
+                                                  _searchOpacityAnimation.value,
+                                              duration: Duration(
+                                                  milliseconds: 200), // Faster
+                                              child: GestureDetector(
+                                                onTap: _collapseSearch,
+                                                child: Icon(Icons.close,
+                                                    color: Color(0xFFF5E9D0)),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        if (_isSearchExpanded &&
+                                            _filteredLocations.isNotEmpty) ...[
+                                          SizedBox(
+                                              height: 12), // Reduced spacing
+                                          AnimatedOpacity(
+                                            opacity:
+                                                _searchOpacityAnimation.value,
+                                            duration: Duration(
+                                                milliseconds: 300), // Faster
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                ..._filteredLocations
+                                                    .map(
+                                                      (location) => Container(
+                                                        clipBehavior:
+                                                            Clip.hardEdge,
+                                                        decoration:
+                                                            BoxDecoration(
+                                                          borderRadius:
+                                                              BorderRadius
+                                                                  .circular(16),
+                                                        ),
+                                                        child: GestureDetector(
+                                                          onTap: () =>
+                                                              _onSuggestionTapped(
+                                                                  location),
+                                                          child: Container(
+                                                            width:
+                                                                double.infinity,
+                                                            padding: EdgeInsets
+                                                                .symmetric(
+                                                                    vertical:
+                                                                        16,
+                                                                    horizontal:
+                                                                        18),
+                                                            margin:
+                                                                EdgeInsets.only(
+                                                                    bottom: 12),
+                                                            decoration:
+                                                                BoxDecoration(
+                                                              gradient:
+                                                                  LinearGradient(
+                                                                colors: [
+                                                                  Color(0xFFF5E9D0)
+                                                                      .withOpacity(
+                                                                          0.25),
+                                                                  Color(0xFFF5E9D0)
+                                                                      .withOpacity(
+                                                                          0.15),
+                                                                ],
+                                                              ),
+                                                              borderRadius:
+                                                                  BorderRadius
+                                                                      .circular(
+                                                                          16),
+                                                              border:
+                                                                  Border.all(
+                                                                color: Color(
+                                                                        0xFFF5E9D0)
+                                                                    .withOpacity(
+                                                                        0.4),
+                                                                width: 1.5,
+                                                              ),
+                                                            ),
+                                                            child: Row(
+                                                              children: [
+                                                                Icon(
+                                                                  _getLocationIcon(
+                                                                      location
+                                                                          .name),
+                                                                  color: Color(
+                                                                      0xFFF5E9D0),
+                                                                  size: 20,
+                                                                ),
+                                                                SizedBox(
+                                                                    width: 14),
+                                                                Expanded(
+                                                                  child: Text(
+                                                                    location
+                                                                        .name,
+                                                                    style:
+                                                                        TextStyle(
+                                                                      fontSize:
+                                                                          16,
+                                                                      color: Color(
+                                                                          0xFFF5E9D0),
+                                                                      fontFamily:
+                                                                          'Montserrat',
+                                                                      fontWeight:
+                                                                          FontWeight
+                                                                              .w600,
+                                                                    ),
+                                                                    overflow:
+                                                                        TextOverflow
+                                                                            .ellipsis,
+                                                                  ),
+                                                                ),
+                                                              ],
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    )
+                                                    .toList(),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    )
+                                  : Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.search,
+                                            color: Color(0xFFF5E9D0)),
+                                        SizedBox(width: 10),
+                                        Text(
+                                          'Where do you want to go?',
                                           style: TextStyle(
                                             fontSize: 16,
                                             color: Color(0xFFF5E9D0),
                                             fontFamily: 'Montserrat',
                                             fontWeight: FontWeight.w500,
                                           ),
-                                          decoration: InputDecoration(
-                                            hintText: 'Where do you want to go?',
-                                            hintStyle: TextStyle(
-                                              color: Color(0xFFF5E9D0).withOpacity(0.7),
-                                            ),
-                                            border: InputBorder.none,
-                                            contentPadding: EdgeInsets.zero,
-                                          ),
                                         ),
-                                      ),
-                                    ),
-                                    AnimatedOpacity(
-                                      opacity: _searchOpacityAnimation.value,
-                                      duration: Duration(milliseconds: 400),
-                                      child: GestureDetector(
-                                        onTap: _collapseSearch,
-                                        child: Icon(Icons.close, color: Color(0xFFF5E9D0)),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                if (_isSearchExpanded && _filteredLocations.isNotEmpty) ...[
-                                  SizedBox(height: 16),
-                                  AnimatedOpacity(
-                                    opacity: _searchOpacityAnimation.value,
-                                    duration: Duration(milliseconds: 500),
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        ..._filteredLocations.map((location) =>
-                                            GestureDetector(
-                                              onTap: () => _onSuggestionTapped(location),
-                                              child: Container(
-                                                width: double.infinity,
-                                                padding: EdgeInsets.symmetric(vertical: 12, horizontal: 16), // Bigger suggestions
-                                                margin: EdgeInsets.only(bottom: 8),
-                                                decoration: BoxDecoration(
-                                                  gradient: LinearGradient(
-                                                    colors: [
-                                                      Color(0xFFF5E9D0).withOpacity(0.25),
-                                                      Color(0xFFF5E9D0).withOpacity(0.15),
-                                                    ],
-                                                  ),
-                                                  borderRadius: BorderRadius.circular(16), // Bigger radius
-                                                  border: Border.all(
-                                                    color: Color(0xFFF5E9D0).withOpacity(0.4),
-                                                    width: 1.5,
-                                                  ),
-                                                ),
-                                                child: Row(
-                                                  children: [
-                                                    Icon(
-                                                      _getLocationIcon(location.name),
-                                                      color: Color(0xFFF5E9D0),
-                                                      size: 20, // Bigger icon
-                                                    ),
-                                                    SizedBox(width: 14), // More spacing
-                                                    Expanded(
-                                                      child: Text(
-                                                        location.name,
-                                                        style: TextStyle(
-                                                          fontSize: 16, // Bigger
-                                                          color: Color(0xFFF5E9D0),
-                                                          fontFamily: 'Montserrat',
-                                                          fontWeight: FontWeight.w600,
-                                                        ),
-                                                        overflow: TextOverflow.ellipsis,
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ),
-                                            ),
-                                        ).toList(),
                                       ],
                                     ),
-                                  ),
-                                ],
-                              ],
-                            )
-                                : Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.search, color: Color(0xFFF5E9D0)),
-                                SizedBox(width: 10),
-                                Text(
-                                  'Where do you want to go?',
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    color: Color(0xFFF5E9D0),
-                                    fontFamily: 'Montserrat',
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ],
                             ),
                           ),
                         ),
@@ -1028,7 +1228,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             ),
           ),
 
-          // Enhanced Menu icon (top-right)
+          // Enhanced Menu icon
           Positioned(
             top: 50,
             right: 16,
@@ -1061,10 +1261,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                               offset: Offset(0, 5),
                             ),
                           ],
-                          border: Border.all(color: Color(0xFF0F7A5A), width: 1.5),
+                          border:
+                              Border.all(color: Color(0xFF0F7A5A), width: 1.5),
                         ),
                         child: IconButton(
-                          icon: Icon(Icons.menu, color: Color(0xFFF5E9D0), size: 32),
+                          icon: Icon(Icons.menu,
+                              color: Color(0xFFF5E9D0), size: 32),
                           onPressed: _openSideMenu,
                         ),
                       ),
@@ -1075,7 +1277,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             ),
           ),
 
-          // Enhanced Starting Location button (bottom-right)
+          // Enhanced Starting Location button
           Positioned(
             bottom: 40,
             right: 16,
@@ -1095,7 +1297,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                         child: AnimatedContainer(
                           duration: Duration(milliseconds: 300),
                           curve: Curves.easeInOut,
-                          padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                          padding: EdgeInsets.symmetric(
+                              horizontal: 20, vertical: 12),
                           decoration: BoxDecoration(
                             gradient: LinearGradient(
                               colors: [
@@ -1113,12 +1316,14 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                                 offset: Offset(0, 5),
                               ),
                             ],
-                            border: Border.all(color: Color(0xFF0F7A5A), width: 1.5),
+                            border: Border.all(
+                                color: Color(0xFF0F7A5A), width: 1.5),
                           ),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.add_location_alt, color: Color(0xFFF5E9D0), size: 24),
+                              Icon(Icons.add_location_alt,
+                                  color: Color(0xFFF5E9D0), size: 24),
                               SizedBox(width: 8),
                               AnimatedSwitcher(
                                 duration: Duration(milliseconds: 300),
@@ -1144,7 +1349,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             ),
           ),
 
-          // Enhanced Recenter button (bottom-left)
+          // Enhanced Recenter button with smooth transition
           Positioned(
             bottom: 40,
             left: 16,
@@ -1177,18 +1382,17 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                               offset: Offset(0, 5),
                             ),
                           ],
-                          border: Border.all(color: Color(0xFF0F7A5A), width: 1.5),
+                          border:
+                              Border.all(color: Color(0xFF0F7A5A), width: 1.5),
                         ),
                         child: FloatingActionButton(
                           heroTag: 'recenter',
                           backgroundColor: Colors.transparent,
                           elevation: 0,
-                          onPressed: () {
-                            if (userLatLng != null) {
-                              mapController.move(userLatLng, damascusZoom);
-                            }
-                          },
-                          child: Icon(Icons.my_location, color: Color(0xFFF5E9D0), size: 28),
+                          onPressed:
+                              _moveToUserLocation, // Use smooth transition
+                          child: Icon(Icons.my_location,
+                              color: Color(0xFFF5E9D0), size: 28),
                         ),
                       ),
                     ),
@@ -1198,7 +1402,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             ),
           ),
 
-          // Side Menu Panel (now from right)
+          // Enhanced Side Menu Panel
           if (_isSideMenuOpen)
             GestureDetector(
               onTap: _closeSideMenu,
@@ -1211,7 +1415,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                       child: Align(
                         alignment: Alignment.centerRight,
                         child: Container(
-                          width: 280,
+                          width: 320, // Wider menu
                           height: double.infinity,
                           child: ClipRRect(
                             borderRadius: BorderRadius.only(
@@ -1237,25 +1441,62 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                                 ),
                                 child: SafeArea(
                                   child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.center,
                                     children: [
                                       SizedBox(height: 40),
                                       Padding(
-                                        padding: EdgeInsets.symmetric(horizontal: 24),
-                                        child: Text(
-                                          'Menu',
-                                          style: TextStyle(
-                                            fontSize: 28,
-                                            fontWeight: FontWeight.bold,
-                                            color: Color(0xFFF5E9D0),
-                                            fontFamily: 'Montserrat',
-                                          ),
+                                        padding: EdgeInsets.symmetric(
+                                            horizontal: 24),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.center,
+                                          children: [
+                                            Container(
+                                              width: 100,
+                                              height: 100,
+                                              decoration: BoxDecoration(
+                                                shape: BoxShape.circle,
+                                                color: Color(0xFFF5E9D0)
+                                                    .withOpacity(0.2),
+                                                border: Border.all(
+                                                  color: Color(0xFFF5E9D0),
+                                                  width: 2,
+                                                ),
+                                              ),
+                                              child: Icon(
+                                                Icons.person,
+                                                color: Color(0xFFF5E9D0),
+                                                size: 60,
+                                              ),
+                                            ),
+                                            SizedBox(height: 10),
+                                            Text(
+                                              'Username',
+                                              style: TextStyle(
+                                                fontSize: 18,
+                                                fontWeight: FontWeight.bold,
+                                                color: Color(0xFFF5E9D0),
+                                                fontFamily: 'Montserrat',
+                                              ),
+                                            ),
+                                          ],
                                         ),
                                       ),
                                       SizedBox(height: 40),
-                                      _buildMenuButton(Icons.logout, 'Sign Out'),
-                                      _buildMenuButton(Icons.people, 'Friends'),
-                                      _buildMenuButton(Icons.settings, 'Settings'),
+                                      _buildEnhancedMenuButton(Icons.people,
+                                          'Friends', _navigateToFriends),
+                                      _buildEnhancedMenuButton(Icons.settings,
+                                          'Settings', () => _closeSideMenu()),
+                                      _buildEnhancedMenuButton(Icons.favorite,
+                                          'Favorites', () => _closeSideMenu()),
+                                      _buildEnhancedMenuButton(Icons.history,
+                                          'History', () => _closeSideMenu()),
+                                      Spacer(),
+                                      _buildEnhancedMenuButton(
+                                          Icons.logout, 'Sign Out', _signOut,
+                                          isDestructive: true),
+                                      SizedBox(height: 40),
                                     ],
                                   ),
                                 ),
@@ -1270,7 +1511,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               ),
             ),
 
-          // Bottom Panel for Route Details
+          // Bottom Panel for Route Details - shows automatically with single route
           if (_isBottomPanelOpen && _selectedRoute != null)
             SlideTransition(
               position: _bottomPanelAnimation,
@@ -1279,11 +1520,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 child: Container(
                   width: double.infinity,
                   constraints: BoxConstraints(
-                    maxHeight: 200, // Increased height
-                    minHeight: 180, // Increased minimum height
+                    maxHeight: 230, // Increased height to fit Go button better
+                    minHeight: 210, // Increased minimum height
                   ),
                   child: ClipRRect(
-                    borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                    borderRadius:
+                        BorderRadius.vertical(top: Radius.circular(24)),
                     child: BackdropFilter(
                       filter: ImageFilter.blur(sigmaX: 25, sigmaY: 25),
                       child: Container(
@@ -1309,7 +1551,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
                                   children: [
                                     Expanded(
                                       child: Text(
@@ -1325,17 +1568,22 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                                     ),
                                     GestureDetector(
                                       onTap: _closeBottomPanel,
-                                      child: Icon(Icons.close, color: Color(0xFFF5E9D0)),
+                                      child: Icon(Icons.close,
+                                          color: Color(0xFFF5E9D0)),
                                     ),
                                   ],
                                 ),
                                 SizedBox(height: 12),
                                 Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceAround,
                                   children: [
-                                    _buildRouteDetail(Icons.access_time, _selectedRoute!.duration),
-                                    _buildRouteDetail(Icons.straighten, _selectedRoute!.distance),
-                                    _buildRouteDetail(Icons.attach_money, _selectedRoute!.cost),
+                                    _buildRouteDetail(Icons.access_time,
+                                        _selectedRoute!.duration),
+                                    _buildRouteDetail(Icons.straighten,
+                                        _selectedRoute!.distance),
+                                    _buildRouteDetail(Icons.attach_money,
+                                        _selectedRoute!.cost),
                                   ],
                                 ),
                                 SizedBox(height: 16),
@@ -1353,7 +1601,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               ),
             ),
 
-          // Favorite Location Dialog
+          // Enhanced Favorite Location Dialog with green gradient Add button
           if (_showFavoriteDialog)
             Container(
               color: Colors.black.withOpacity(0.5),
@@ -1397,7 +1645,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
                                   children: [
                                     Text(
                                       'Name the Location',
@@ -1410,7 +1659,16 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                                     ),
                                     GestureDetector(
                                       onTap: _closeFavoriteDialog,
-                                      child: Icon(Icons.close, color: Color(0xFF06332E)),
+                                      child: Container(
+                                        padding: EdgeInsets.all(4),
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: Color(0xFF06332E)
+                                              .withOpacity(0.1),
+                                        ),
+                                        child: Icon(Icons.close,
+                                            color: Color(0xFF06332E)),
+                                      ),
                                     ),
                                   ],
                                 ),
@@ -1433,7 +1691,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                                     border: OutlineInputBorder(
                                       borderRadius: BorderRadius.circular(16),
                                       borderSide: BorderSide(
-                                        color: Color(0xFF06332E).withOpacity(0.3),
+                                        color:
+                                            Color(0xFF06332E).withOpacity(0.3),
                                       ),
                                     ),
                                     focusedBorder: OutlineInputBorder(
@@ -1446,35 +1705,50 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                                   ),
                                 ),
                                 SizedBox(height: 20),
+                                // Enhanced Add button with green gradient
                                 GestureDetector(
                                   onTap: _addFavoriteLocation,
                                   child: ClipRRect(
                                     borderRadius: BorderRadius.circular(20),
                                     child: BackdropFilter(
-                                      filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                                      filter: ImageFilter.blur(
+                                          sigmaX: 10, sigmaY: 10),
                                       child: Container(
                                         width: double.infinity,
-                                        padding: EdgeInsets.symmetric(vertical: 16),
+                                        padding:
+                                            EdgeInsets.symmetric(vertical: 16),
                                         decoration: BoxDecoration(
                                           gradient: LinearGradient(
                                             colors: [
-                                              Color(0xFFE8D5B7).withOpacity(0.9),
-                                              Color(0xFFF5E9D0).withOpacity(0.9),
+                                              Color(0xFF06332E).withOpacity(
+                                                  0.9), // Green gradient
+                                              Color(0xFF0B664E)
+                                                  .withOpacity(0.9),
                                             ],
                                             begin: Alignment.topLeft,
                                             end: Alignment.bottomRight,
                                           ),
-                                          borderRadius: BorderRadius.circular(20),
+                                          borderRadius:
+                                              BorderRadius.circular(20),
                                           border: Border.all(
-                                            color: Color(0xFF06332E).withOpacity(0.4),
+                                            color: Color(0xFF0F7A5A),
                                             width: 1.5,
                                           ),
+                                          boxShadow: [
+                                            BoxShadow(
+                                              color:
+                                                  Colors.black.withOpacity(0.2),
+                                              blurRadius: 8,
+                                              offset: Offset(0, 4),
+                                            ),
+                                          ],
                                         ),
                                         child: Center(
                                           child: Text(
                                             'Add',
                                             style: TextStyle(
-                                              color: Color(0xFF06332E),
+                                              color: Color(
+                                                  0xFFF5E9D0), // Light text on green
                                               fontSize: 18,
                                               fontWeight: FontWeight.bold,
                                               fontFamily: 'Montserrat',
@@ -1525,15 +1799,15 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               ),
             ),
 
-          // Move notification to the end of Stack children and add higher elevation
+          // Enhanced notification system
           if (_showNotification)
             Positioned(
               top: 0,
               left: 0,
               right: 0,
-              child: Material( // Add Material wrapper for proper elevation
+              child: Material(
                 color: Colors.transparent,
-                elevation: 20, // High elevation to appear above everything
+                elevation: 20,
                 child: SlideTransition(
                   position: _notificationSlideAnimation,
                   child: AnimatedBuilder(
@@ -1542,13 +1816,15 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                       opacity: _notificationOpacityAnimation.value,
                       child: SafeArea(
                         child: Container(
-                          margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          margin:
+                              EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(20),
                             child: BackdropFilter(
                               filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
                               child: Container(
-                                padding: EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                                padding: EdgeInsets.symmetric(
+                                    horizontal: 20, vertical: 16),
                                 decoration: BoxDecoration(
                                   gradient: LinearGradient(
                                     colors: [
@@ -1565,7 +1841,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                                   ),
                                   boxShadow: [
                                     BoxShadow(
-                                      color: Colors.black.withOpacity(0.25), // Increased shadow
+                                      color: Colors.black.withOpacity(0.25),
                                       blurRadius: 25,
                                       offset: Offset(0, 12),
                                     ),
@@ -1573,7 +1849,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                                 ),
                                 child: Row(
                                   children: [
-                                    Icon(_notificationIcon, color: Colors.white, size: 24),
+                                    Icon(_notificationIcon,
+                                        color: Colors.white, size: 24),
                                     SizedBox(width: 12),
                                     Expanded(
                                       child: Text(
@@ -1588,7 +1865,17 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                                     ),
                                     GestureDetector(
                                       onTap: _hideCustomNotification,
-                                      child: Icon(Icons.close, color: Colors.white.withOpacity(0.8), size: 20),
+                                      child: Container(
+                                        padding: EdgeInsets.all(4),
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: Colors.white.withOpacity(0.2),
+                                        ),
+                                        child: Icon(Icons.close,
+                                            color:
+                                                Colors.white.withOpacity(0.8),
+                                            size: 16),
+                                      ),
                                     ),
                                   ],
                                 ),
@@ -1609,39 +1896,80 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
   IconData _getLocationIcon(String locationName) {
     switch (locationName.toLowerCase()) {
-      case 'home': return Icons.home;
-      case 'work': return Icons.work;
-      case 'school': return Icons.school;
-      case 'university': return Icons.school;
-      case 'hospital': return Icons.local_hospital;
-      case 'mall': return Icons.shopping_cart;
-      case 'airport': return Icons.flight;
-      case 'park': return Icons.park;
-      case 'restaurant': return Icons.restaurant;
-      case 'hotel': return Icons.hotel;
-      default: return Icons.location_on;
+      case 'home':
+        return Icons.home;
+      case 'work':
+        return Icons.work;
+      case 'school':
+        return Icons.school;
+      case 'university':
+        return Icons.school;
+      case 'hospital':
+        return Icons.local_hospital;
+      case 'mall':
+        return Icons.shopping_cart;
+      case 'airport':
+        return Icons.flight;
+      case 'park':
+        return Icons.park;
+      case 'restaurant':
+        return Icons.restaurant;
+      case 'hotel':
+        return Icons.hotel;
+      default:
+        return Icons.location_on;
     }
   }
 
   Widget _buildRouteDetail(IconData icon, String text) {
     return Column(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, color: Color(0xFFF5E9D0), size: 24),
-        SizedBox(height: 4),
-        Text(
-          text,
-          style: TextStyle(
-            color: Color(0xFFF5E9D0),
-            fontSize: 14,
-            fontWeight: FontWeight.w500,
-            fontFamily: 'Montserrat',
+        Container(
+          padding: EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Color(0xFFF5E9D0).withOpacity(0.2),
+            boxShadow: [
+              BoxShadow(
+                color: Color(0xFFF5E9D0).withOpacity(0.1),
+                blurRadius: 4,
+                spreadRadius: 1,
+              ),
+            ],
+          ),
+          child: Icon(icon, color: Color(0xFFF5E9D0), size: 22),
+        ),
+        SizedBox(height: 6),
+        Container(
+          width: 80, // Fixed width for text container
+          child: Text(
+            text,
+            style: TextStyle(
+              color: Color(0xFFF5E9D0),
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              fontFamily: 'Montserrat',
+              shadows: [
+                Shadow(
+                  blurRadius: 2.0,
+                  color: Colors.black.withOpacity(0.3),
+                  offset: Offset(0, 1),
+                ),
+              ],
+            ),
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            maxLines: 1,
           ),
         ),
       ],
     );
   }
 
-  Widget _buildMenuButton(IconData icon, String title) {
+  Widget _buildEnhancedMenuButton(
+      IconData icon, String title, VoidCallback onTap,
+      {bool isDestructive = false}) {
     return Container(
       margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: ClipRRect(
@@ -1650,31 +1978,62 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
           child: Container(
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.1),
+              gradient: LinearGradient(
+                colors: isDestructive
+                    ? [
+                        Colors.red.withOpacity(0.2),
+                        Colors.red.withOpacity(0.1),
+                      ]
+                    : [
+                        Colors.white.withOpacity(0.15),
+                        Colors.white.withOpacity(0.05),
+                      ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
               borderRadius: BorderRadius.circular(16),
               border: Border.all(
-                color: Color(0xFFF5E9D0).withOpacity(0.2),
+                color: isDestructive
+                    ? Colors.red.withOpacity(0.3)
+                    : Color(0xFFF5E9D0).withOpacity(0.2),
                 width: 1,
               ),
             ),
             child: ListTile(
-              leading: Icon(
-                icon,
-                color: Color(0xFFF5E9D0),
-                size: 24,
+              contentPadding: EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              leading: Container(
+                padding: EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: isDestructive
+                      ? Colors.red.withOpacity(0.2)
+                      : Color(0xFFF5E9D0).withOpacity(0.2),
+                ),
+                child: Icon(
+                  icon,
+                  color:
+                      isDestructive ? Colors.red.shade300 : Color(0xFFF5E9D0),
+                  size: 24,
+                ),
               ),
               title: Text(
                 title,
                 style: TextStyle(
-                  color: Color(0xFFF5E9D0),
+                  color:
+                      isDestructive ? Colors.red.shade300 : Color(0xFFF5E9D0),
                   fontSize: 16,
-                  fontWeight: FontWeight.w500,
+                  fontWeight: FontWeight.w600,
                   fontFamily: 'Montserrat',
                 ),
               ),
-              onTap: () {
-                _closeSideMenu();
-              },
+              trailing: Icon(
+                Icons.arrow_forward_ios,
+                color: isDestructive
+                    ? Colors.red.shade300
+                    : Color(0xFFF5E9D0).withOpacity(0.6),
+                size: 16,
+              ),
+              onTap: onTap,
             ),
           ),
         ),
@@ -1683,13 +2042,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   }
 }
 
+// Updated Pin component for single route
 class _PinWithAnimatedButtons extends StatefulWidget {
   final String? selected;
   final void Function(String) onSelect;
   final VoidCallback onGo;
   final VoidCallback onMakeFavorite;
-  final List<RouteData> availableRoutes;
-  final void Function(RouteData) onRouteSelected;
   final RouteData? selectedRoute;
   final bool isTransitioning;
   final Animation<double> transitionAnimation;
@@ -1699,8 +2057,6 @@ class _PinWithAnimatedButtons extends StatefulWidget {
     required this.onSelect,
     required this.onGo,
     required this.onMakeFavorite,
-    required this.availableRoutes,
-    required this.onRouteSelected,
     this.selectedRoute,
     required this.isTransitioning,
     required this.transitionAnimation,
@@ -1708,10 +2064,12 @@ class _PinWithAnimatedButtons extends StatefulWidget {
   }) : super(key: key);
 
   @override
-  State<_PinWithAnimatedButtons> createState() => _PinWithAnimatedButtonsState();
+  State<_PinWithAnimatedButtons> createState() =>
+      _PinWithAnimatedButtonsState();
 }
 
-class _PinWithAnimatedButtonsState extends State<_PinWithAnimatedButtons> with TickerProviderStateMixin {
+class _PinWithAnimatedButtonsState extends State<_PinWithAnimatedButtons>
+    with TickerProviderStateMixin {
   late final AnimationController _controller;
   late final AnimationController _pinController;
   late final Animation<double> _pinOpacity;
@@ -1732,66 +2090,50 @@ class _PinWithAnimatedButtonsState extends State<_PinWithAnimatedButtons> with T
 
   void _initAnimations() {
     _pinController = AnimationController(
-        vsync: this,
-        duration: const Duration(milliseconds: 150) // Faster
-    );
+        vsync: this, duration: const Duration(milliseconds: 150));
 
     _controller = AnimationController(
-        vsync: this,
-        duration: const Duration(milliseconds: 600) // Faster
-    );
+        vsync: this, duration: const Duration(milliseconds: 600));
 
-    // Pin animations
     _pinOpacity = Tween<double>(begin: 0, end: 1).animate(
-        CurvedAnimation(parent: _pinController, curve: Curves.easeInOut)
-    );
+        CurvedAnimation(parent: _pinController, curve: Curves.easeInOut));
 
     _pinScale = Tween<double>(begin: 0.3, end: 1).animate(
-        CurvedAnimation(parent: _pinController, curve: Curves.elasticOut)
-    );
+        CurvedAnimation(parent: _pinController, curve: Curves.elasticOut));
 
-    // Favorite button animations
-    _favoriteOpacity = Tween<double>(begin: 0, end: 1).animate(
-        CurvedAnimation(parent: _controller, curve: const Interval(0.1, 0.4, curve: Curves.easeOut))
-    );
-
-    _favoriteScale = Tween<double>(begin: 0.1, end: 1).animate(
-        CurvedAnimation(parent: _controller, curve: const Interval(0.1, 0.5, curve: Curves.elasticOut))
-    );
-
-    // Button animations
-    _buttonsOpacity = Tween<double>(begin: 0, end: 1).animate(
-        CurvedAnimation(parent: _controller, curve: const Interval(0.3, 0.7, curve: Curves.easeOut))
-    );
-
-    _buttonsScale = Tween<double>(begin: 0.1, end: 1).animate(
-        CurvedAnimation(parent: _controller, curve: const Interval(0.4, 0.9, curve: Curves.elasticOut))
-    );
-
-    // Button positions - CLOSER to each other (original scrambled style)
-    _fewestOffset = Tween<Offset>(
-        begin: const Offset(0, 0),
-        end: const Offset(-1.2, -0.15) // Closer
-    ).animate(CurvedAnimation(
+    _favoriteOpacity = Tween<double>(begin: 0, end: 1).animate(CurvedAnimation(
         parent: _controller,
-        curve: const Interval(0.2, 0.8, curve: Curves.easeOutCubic)
-    ));
+        curve: const Interval(0.1, 0.4, curve: Curves.easeOut)));
 
-    _fastestOffset = Tween<Offset>(
-        begin: const Offset(0, 0),
-        end: const Offset(0, -0.3) // Closer
-    ).animate(CurvedAnimation(
+    _favoriteScale = Tween<double>(begin: 0.1, end: 1).animate(CurvedAnimation(
         parent: _controller,
-        curve: const Interval(0.3, 0.9, curve: Curves.easeOutCubic)
-    ));
+        curve: const Interval(0.1, 0.5, curve: Curves.elasticOut)));
 
-    _cheapestOffset = Tween<Offset>(
-        begin: const Offset(0, 0),
-        end: const Offset(1.2, -0.15) // Closer
-    ).animate(CurvedAnimation(
+    _buttonsOpacity = Tween<double>(begin: 0, end: 1).animate(CurvedAnimation(
         parent: _controller,
-        curve: const Interval(0.2, 0.8, curve: Curves.easeOutCubic)
-    ));
+        curve: const Interval(0.3, 0.7, curve: Curves.easeOut)));
+
+    _buttonsScale = Tween<double>(begin: 0.1, end: 1).animate(CurvedAnimation(
+        parent: _controller,
+        curve: const Interval(0.4, 0.9, curve: Curves.elasticOut)));
+
+    _fewestOffset =
+        Tween<Offset>(begin: const Offset(0, 0), end: const Offset(-1.2, -0.15))
+            .animate(CurvedAnimation(
+                parent: _controller,
+                curve: const Interval(0.2, 0.8, curve: Curves.easeOutCubic)));
+
+    _fastestOffset =
+        Tween<Offset>(begin: const Offset(0, 0), end: const Offset(0, -0.3))
+            .animate(CurvedAnimation(
+                parent: _controller,
+                curve: const Interval(0.3, 0.9, curve: Curves.easeOutCubic)));
+
+    _cheapestOffset =
+        Tween<Offset>(begin: const Offset(0, 0), end: const Offset(1.2, -0.15))
+            .animate(CurvedAnimation(
+                parent: _controller,
+                curve: const Interval(0.2, 0.8, curve: Curves.easeOutCubic)));
   }
 
   void resetAnimation() {
@@ -1803,7 +2145,7 @@ class _PinWithAnimatedButtonsState extends State<_PinWithAnimatedButtons> with T
 
   void playForward() {
     _pinController.forward(from: 0).then((_) {
-      Future.delayed(const Duration(milliseconds: 50), () { // Faster
+      Future.delayed(const Duration(milliseconds: 50), () {
         _controller.forward(from: 0);
       });
     });
@@ -1831,7 +2173,7 @@ class _PinWithAnimatedButtonsState extends State<_PinWithAnimatedButtons> with T
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Favorite button above pin with beige gradient
+          // Favorite button above pin
           AnimatedBuilder(
             animation: _controller,
             builder: (context, child) => Transform.scale(
@@ -1847,12 +2189,13 @@ class _PinWithAnimatedButtonsState extends State<_PinWithAnimatedButtons> with T
                       child: BackdropFilter(
                         filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
                         child: Container(
-                          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          padding:
+                              EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                           decoration: BoxDecoration(
                             gradient: LinearGradient(
                               colors: [
-                                Color(0xFFE8D5B7).withOpacity(0.9), // Darker beige
-                                Color(0xFFF5E9D0).withOpacity(0.9), // Lighter beige
+                                Color(0xFFE8D5B7).withOpacity(0.9),
+                                Color(0xFFF5E9D0).withOpacity(0.9),
                               ],
                               begin: Alignment.topLeft,
                               end: Alignment.bottomRight,
@@ -1873,12 +2216,13 @@ class _PinWithAnimatedButtonsState extends State<_PinWithAnimatedButtons> with T
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.favorite_border, color: Color(0xFF06332E), size: 16), // Green font
+                              Icon(Icons.favorite_border,
+                                  color: Color(0xFF06332E), size: 16),
                               SizedBox(width: 6),
                               Text(
                                 'Add to Favorites',
                                 style: TextStyle(
-                                  color: Color(0xFF06332E), // Green font
+                                  color: Color(0xFF06332E),
                                   fontSize: 12,
                                   fontWeight: FontWeight.w600,
                                   fontFamily: 'Montserrat',
@@ -1895,7 +2239,7 @@ class _PinWithAnimatedButtonsState extends State<_PinWithAnimatedButtons> with T
             ),
           ),
 
-          // Pin with precise positioning
+          // Pin
           AnimatedBuilder(
             animation: _pinController,
             builder: (context, child) => Transform.scale(
@@ -1907,7 +2251,6 @@ class _PinWithAnimatedButtonsState extends State<_PinWithAnimatedButtons> with T
                   child: Stack(
                     alignment: Alignment.center,
                     children: [
-                      // Pin shadow
                       Positioned(
                         top: 2,
                         child: Container(
@@ -1919,7 +2262,6 @@ class _PinWithAnimatedButtonsState extends State<_PinWithAnimatedButtons> with T
                           ),
                         ),
                       ),
-                      // Main pin icon - tip exactly at clicked location
                       const Icon(
                         Icons.location_on,
                         color: Colors.red,
@@ -1933,13 +2275,16 @@ class _PinWithAnimatedButtonsState extends State<_PinWithAnimatedButtons> with T
           ),
           const SizedBox(height: 4),
 
-          // Route option buttons with transition animation
-          if (widget.availableRoutes.isEmpty)
+          // Route option buttons - only show if no route is selected yet
+          if (widget.selectedRoute == null)
             AnimatedBuilder(
-              animation: widget.isTransitioning ? widget.transitionAnimation : _controller,
+              animation: widget.isTransitioning
+                  ? widget.transitionAnimation
+                  : _controller,
               builder: (context, child) {
                 final opacity = widget.isTransitioning
-                    ? (1.0 - widget.transitionAnimation.value) * _buttonsOpacity.value
+                    ? (1.0 - widget.transitionAnimation.value) *
+                        _buttonsOpacity.value
                     : _buttonsOpacity.value;
 
                 return Opacity(
@@ -1947,19 +2292,16 @@ class _PinWithAnimatedButtonsState extends State<_PinWithAnimatedButtons> with T
                   child: Transform.scale(
                     scale: _buttonsScale.value,
                     child: SizedBox(
-                      width: 350, // Adjusted for closer buttons
+                      width: 350,
                       height: 70,
                       child: Stack(
                         alignment: Alignment.center,
                         children: [
-                          // Fewest button
                           AnimatedBuilder(
                             animation: _fewestOffset,
                             builder: (context, child) => Transform.translate(
-                              offset: Offset(
-                                  _fewestOffset.value.dx * 80, // Closer multiplier
-                                  _fewestOffset.value.dy * 80
-                              ),
+                              offset: Offset(_fewestOffset.value.dx * 80,
+                                  _fewestOffset.value.dy * 80),
                               child: Container(
                                 width: 110,
                                 height: 55,
@@ -1973,15 +2315,11 @@ class _PinWithAnimatedButtonsState extends State<_PinWithAnimatedButtons> with T
                               ),
                             ),
                           ),
-
-                          // Fastest button
                           AnimatedBuilder(
                             animation: _fastestOffset,
                             builder: (context, child) => Transform.translate(
-                              offset: Offset(
-                                  _fastestOffset.value.dx * 80,
-                                  _fastestOffset.value.dy * 80
-                              ),
+                              offset: Offset(_fastestOffset.value.dx * 80,
+                                  _fastestOffset.value.dy * 80),
                               child: Container(
                                 width: 110,
                                 height: 55,
@@ -1995,15 +2333,11 @@ class _PinWithAnimatedButtonsState extends State<_PinWithAnimatedButtons> with T
                               ),
                             ),
                           ),
-
-                          // Cheapest button
                           AnimatedBuilder(
                             animation: _cheapestOffset,
                             builder: (context, child) => Transform.translate(
-                              offset: Offset(
-                                  _cheapestOffset.value.dx * 80,
-                                  _cheapestOffset.value.dy * 80
-                              ),
+                              offset: Offset(_cheapestOffset.value.dx * 80,
+                                  _cheapestOffset.value.dy * 80),
                               child: Container(
                                 width: 110,
                                 height: 55,
@@ -2048,7 +2382,8 @@ class _RouteOptionButton extends StatefulWidget {
   State<_RouteOptionButton> createState() => _RouteOptionButtonState();
 }
 
-class _RouteOptionButtonState extends State<_RouteOptionButton> with SingleTickerProviderStateMixin {
+class _RouteOptionButtonState extends State<_RouteOptionButton>
+    with SingleTickerProviderStateMixin {
   late AnimationController _tapController;
   late Animation<double> _tapAnimation;
 
@@ -2108,13 +2443,13 @@ class _RouteOptionButtonState extends State<_RouteOptionButton> with SingleTicke
                   gradient: LinearGradient(
                     colors: widget.selected
                         ? [
-                      Color(0xFF0B664E).withOpacity(0.85),
-                      Color(0xFF06332E).withOpacity(0.85),
-                    ]
+                            Color(0xFF0B664E).withOpacity(0.85),
+                            Color(0xFF06332E).withOpacity(0.85),
+                          ]
                         : [
-                      Color(0xFF06332E).withOpacity(0.75),
-                      Color(0xFF0B664E).withOpacity(0.75),
-                    ],
+                            Color(0xFF06332E).withOpacity(0.75),
+                            Color(0xFF0B664E).withOpacity(0.75),
+                          ],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                   ),
@@ -2157,7 +2492,8 @@ class _EnhancedGoButton extends StatefulWidget {
   State<_EnhancedGoButton> createState() => _EnhancedGoButtonState();
 }
 
-class _EnhancedGoButtonState extends State<_EnhancedGoButton> with SingleTickerProviderStateMixin {
+class _EnhancedGoButtonState extends State<_EnhancedGoButton>
+    with SingleTickerProviderStateMixin {
   late AnimationController _hoverController;
   late Animation<double> _scaleAnimation;
   late Animation<double> _glowAnimation;
@@ -2204,8 +2540,8 @@ class _EnhancedGoButtonState extends State<_EnhancedGoButton> with SingleTickerP
             child: BackdropFilter(
               filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
               child: Container(
-                width: 140,
-                height: 48,
+                width: 150,
+                height: 50,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
@@ -2229,27 +2565,53 @@ class _EnhancedGoButtonState extends State<_EnhancedGoButton> with SingleTickerP
                     ),
                     if (_glowAnimation.value > 0)
                       BoxShadow(
-                        color: Color(0xFFF5E9D0).withOpacity(_glowAnimation.value * 0.5),
+                        color: Color(0xFFF5E9D0)
+                            .withOpacity(_glowAnimation.value * 0.5),
                         blurRadius: 16,
                         offset: Offset(0, 0),
                         spreadRadius: 1,
                       ),
                   ],
                 ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  mainAxisSize: MainAxisSize.min,
+                child: Stack(
                   children: [
-                    Icon(Icons.directions, color: Color(0xFF06332E), size: 24),
-                    SizedBox(width: 8),
-                    Text(
-                      'Go',
-                      style: TextStyle(
-                        color: Color(0xFF06332E),
-                        fontWeight: FontWeight.bold,
-                        fontSize: 18,
-                        fontFamily: 'Montserrat',
+                    // Subtle animated gradient overlay
+                    if (_glowAnimation.value > 0)
+                      Positioned.fill(
+                        child: Opacity(
+                          opacity: _glowAnimation.value * 0.3,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              gradient: RadialGradient(
+                                colors: [
+                                  Colors.white.withOpacity(0.7),
+                                  Colors.white.withOpacity(0.0),
+                                ],
+                                center: Alignment.center,
+                                radius: 0.8,
+                              ),
+                            ),
+                          ),
+                        ),
                       ),
+                    // Button content
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.directions,
+                            color: Color(0xFF06332E), size: 24),
+                        SizedBox(width: 10),
+                        Text(
+                          'Go',
+                          style: TextStyle(
+                            color: Color(0xFF06332E),
+                            fontWeight: FontWeight.bold,
+                            fontSize: 18, // Slightly larger text
+                            fontFamily: 'Montserrat',
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -2262,7 +2624,7 @@ class _EnhancedGoButtonState extends State<_EnhancedGoButton> with SingleTickerP
   }
 }
 
-// Data classes - renamed to avoid conflicts
+// Data classes
 class SearchLocationData {
   final String name;
   final LatLng location;
@@ -2288,7 +2650,6 @@ class RouteData {
   });
 }
 
-// Helper classes
 class Destination {
   final String name;
   final LatLng location;
@@ -2299,7 +2660,8 @@ class Destination {
 class SearchDestinationScreen extends StatelessWidget {
   final String? initialQuery;
 
-  const SearchDestinationScreen({this.initialQuery, Key? key}) : super(key: key);
+  const SearchDestinationScreen({this.initialQuery, Key? key})
+      : super(key: key);
 
   @override
   Widget build(BuildContext context) {

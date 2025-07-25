@@ -238,10 +238,12 @@ INTEGRATION_CONFIG = {
     "notifications": {
         "email": {
             "enabled": True,
-            "smtp_host": os.getenv("SMTP_HOST"),
+            "smtp_host": os.getenv("SMTP_HOST", "smtp.gmail.com"),
             "smtp_port": int(os.getenv("SMTP_PORT", "587")),
-            "smtp_user": os.getenv("SMTP_USER"),
-            "smtp_password": os.getenv("SMTP_PASSWORD")
+            "smtp_user": os.getenv("SMTP_USER", "transportationapp.dev@gmail.com"),
+            "smtp_password": os.getenv("SMTP_PASSWORD", "app_password_here"),
+            # للتطوير فقط: تعطيل إرسال البريد الإلكتروني الفعلي
+            "development_mode": True
         },
         "sms": {
             "enabled": False,
@@ -422,4 +424,4 @@ def get_environment_config(environment: str = "development") -> Dict[str, Any]:
     """الحصول على إعدادات البيئة"""
     if environment == "production":
         return PRODUCTION_CONFIG
-    return DEVELOPMENT_CONFIG 
+    return DEVELOPMENT_CONFIG

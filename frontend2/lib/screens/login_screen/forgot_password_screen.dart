@@ -1,5 +1,7 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../../providers/auth_provider.dart';
 import 'verify_email_screen.dart';
 
 class ForgotPasswordScreen extends StatefulWidget {
@@ -19,7 +21,9 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     super.dispose();
   }
 
-  void _onSubmit() {
+  bool _isLoading = false;
+
+  void _onSubmit() async {
     final email = _emailController.text.trim();
     final emailValid = RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(email);
     if (email.isEmpty) {
@@ -35,12 +39,39 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     } else {
       setState(() {
         emailError = null;
+        _isLoading = true;
       });
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (context) => VerifyEmailScreen(email: email),
-        ),
-      );
+
+      try {
+        final authProvider = Provider.of<AuthProvider>(context, listen: false);
+        final success = await authProvider.forgotPassword(email);
+
+        if (!mounted) return;
+
+        setState(() {
+          _isLoading = false;
+        });
+
+        if (success) {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (context) => VerifyEmailScreen(email: email),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(authProvider.error ?? 'Failed to send verification code. Please try again.')),
+          );
+        }
+      } catch (e) {
+        if (!mounted) return;
+        setState(() {
+          _isLoading = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.toString())),
+        );
+      }
     }
   }
 
@@ -124,7 +155,13 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                       SizedBox(
                         width: double.infinity,
                         height: 48,
-                        child: ElevatedButton(
+                        child: _isLoading
+                            ? const Center(
+                                child: CircularProgressIndicator(
+                                  valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF06332E)),
+                                ),
+                              )
+                            : ElevatedButton(
                           onPressed: _onSubmit,
                           style: ElevatedButton.styleFrom(
                             padding: const EdgeInsets.symmetric(vertical: 0, horizontal: 0),
@@ -179,4 +216,4 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       ),
     );
   }
-} 
+}

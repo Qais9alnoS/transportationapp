@@ -1,6 +1,10 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
+import '../../providers/auth_provider.dart';
+import 'reset_password_screen.dart';
+import '../map_screen.dart';
 
 class VerifyEmailScreen extends StatefulWidget {
   final String email;
@@ -36,14 +40,53 @@ class _VerifyEmailScreenState extends State<VerifyEmailScreen> {
     }
   }
 
-  void _onConfirm() {
+  void _onConfirm() async {
     final allFilled = _controllers.every((c) => c.text.isNotEmpty);
-    final allDigits = _controllers.every((c) => c.text.length == 1 && int.tryParse(c.text) != null);
+    final allDigits = _controllers
+        .every((c) => c.text.length == 1 && int.tryParse(c.text) != null);
     if (allFilled && allDigits) {
       setState(() {
         _errorText = null;
       });
-      Navigator.of(context).popUntil((route) => route.isFirst);
+
+      // Generate a token from the verification code
+      final verificationCode = _controllers.map((c) => c.text).join();
+
+      // Show loading indicator
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const Center(child: CircularProgressIndicator()),
+      );
+
+      try {
+        final authProvider = Provider.of<AuthProvider>(context, listen: false);
+        final success =
+            await authProvider.verifyEmail(widget.email, verificationCode);
+
+        // Close loading dialog
+        Navigator.of(context).pop();
+
+        if (success) {
+          // If verification successful, navigate to map screen
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (context) => const MapScreen()),
+          );
+        } else {
+          // Show error message
+          setState(() {
+            _errorText =
+                authProvider.error ?? 'Verification failed. Please try again.';
+          });
+        }
+      } catch (e) {
+        // Close loading dialog
+        Navigator.of(context).pop();
+
+        setState(() {
+          _errorText = e.toString();
+        });
+      }
     } else {
       setState(() {
         _errorText = 'Please enter a valid 4-digit code.';
@@ -74,11 +117,13 @@ class _VerifyEmailScreenState extends State<VerifyEmailScreen> {
                     minHeight: 350,
                     maxHeight: 420,
                   ),
-                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 32),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 32, vertical: 32),
                   decoration: BoxDecoration(
                     color: Colors.white.withOpacity(0.18),
                     borderRadius: BorderRadius.circular(32),
-                    border: Border.all(color: Colors.white.withOpacity(0.3), width: 1.2),
+                    border: Border.all(
+                        color: Colors.white.withOpacity(0.3), width: 1.2),
                   ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
@@ -123,7 +168,8 @@ class _VerifyEmailScreenState extends State<VerifyEmailScreen> {
                             decoration: BoxDecoration(
                               color: const Color(0xFFF5E9D0),
                               borderRadius: BorderRadius.circular(16),
-                              border: Border.all(color: Color(0xFFC2B185), width: 1.2),
+                              border: Border.all(
+                                  color: Color(0xFFC2B185), width: 1.2),
                             ),
                             child: Center(
                               child: TextField(
@@ -155,7 +201,10 @@ class _VerifyEmailScreenState extends State<VerifyEmailScreen> {
                         const SizedBox(height: 8),
                         Text(
                           _errorText!,
-                          style: const TextStyle(color: Colors.red, fontSize: 14, fontFamily: 'Montserrat'),
+                          style: const TextStyle(
+                              color: Colors.red,
+                              fontSize: 14,
+                              fontFamily: 'Montserrat'),
                         ),
                       ],
                       const SizedBox(height: 32),
@@ -165,19 +214,27 @@ class _VerifyEmailScreenState extends State<VerifyEmailScreen> {
                         child: ElevatedButton(
                           onPressed: _onConfirm,
                           style: ElevatedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(vertical: 0, horizontal: 0),
+                            padding: const EdgeInsets.symmetric(
+                                vertical: 0, horizontal: 0),
                             shape: const StadiumBorder(),
                             backgroundColor: Colors.transparent,
                             shadowColor: Colors.transparent,
                             elevation: 0,
                           ).copyWith(
-                            backgroundColor: MaterialStateProperty.all(Colors.transparent),
+                            backgroundColor:
+                                MaterialStateProperty.all(Colors.transparent),
                             elevation: MaterialStateProperty.all(0),
-                            shadowColor: MaterialStateProperty.all(Colors.transparent),
-                            padding: MaterialStateProperty.all(const EdgeInsets.symmetric(vertical: 0, horizontal: 0)),
-                            foregroundColor: MaterialStateProperty.all(Colors.transparent),
-                            surfaceTintColor: MaterialStateProperty.all(Colors.transparent),
-                            overlayColor: MaterialStateProperty.all(Colors.transparent),
+                            shadowColor:
+                                MaterialStateProperty.all(Colors.transparent),
+                            padding: MaterialStateProperty.all(
+                                const EdgeInsets.symmetric(
+                                    vertical: 0, horizontal: 0)),
+                            foregroundColor:
+                                MaterialStateProperty.all(Colors.transparent),
+                            surfaceTintColor:
+                                MaterialStateProperty.all(Colors.transparent),
+                            overlayColor:
+                                MaterialStateProperty.all(Colors.transparent),
                           ),
                           child: Ink(
                             decoration: BoxDecoration(
@@ -217,4 +274,4 @@ class _VerifyEmailScreenState extends State<VerifyEmailScreen> {
       ),
     );
   }
-} 
+}

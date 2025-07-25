@@ -57,8 +57,14 @@ def get_current_admin(
 async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     """Register a new user with email and password"""
     try:
+        from ..services.email_service import EmailService
+        
         auth_service = AuthService(db)
         user = auth_service.create_user(user_data)
+        
+        # إرسال رمز التحقق إلى البريد الإلكتروني
+        await EmailService.send_verification_email(user.email, "email_verification")
+        
         tokens = create_tokens(user.username, user.id)
         return UserWithToken(
             id=user.id,
@@ -79,7 +85,7 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     except HTTPException as e:
         raise e
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"فشل في التسجيل: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Registration failed: {str(e)}")
 
 @router.post("/login", response_model=Token)
 async def login(user_data: UserLogin, db: Session = Depends(get_db)):
@@ -97,12 +103,29 @@ async def login(user_data: UserLogin, db: Session = Depends(get_db)):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Account is deactivated"
             )
+        
+        # التحقق من تأكيد البريد الإلكتروني
+        if not user.is_verified:
+            # إرسال رمز تحقق جديد
+            from ..services.email_service import EmailService
+            await EmailService.send_verification_email(user.email, "email_verification")
+            
+            # إرجاع رسالة خطأ مع معلومات إضافية
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "message": "Email not verified",
+                    "email": user.email,
+                    "requires_verification": True
+                }
+            )
+        
         tokens = create_tokens(user.username, user.id)
         return tokens
     except HTTPException as e:
         raise e
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"فشل في تسجيل الدخول: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Login failed: {str(e)}")
 
 @router.post("/google", response_model=Token)
 async def google_auth(google_data: GoogleAuthRequest, db: Session = Depends(get_db)):
@@ -145,22 +168,109 @@ async def get_current_user_info(current_user: UserResponse = Depends(get_current
 async def forgot_password(request: PasswordResetRequest, db: Session = Depends(get_db)):
     """Request password reset"""
     try:
+        from ..services.email_service import EmailService
         auth_service = AuthService(db)
+        
         # لا تكشف إذا كان البريد موجودًا أم لا
-        _ = auth_service.get_user_by_email(request.email)
-        # في تطبيق حقيقي: أرسل إيميل إعادة تعيين
-        return {"message": "If the email exists, a password reset link has been sent"}
+        user = auth_service.get_user_by_email(request.email)
+        
+        # إرسال رمز التحقق فقط إذا كان المستخدم موجودًا
+        if user:
+            # إرسال بريد إلكتروني يحتوي على رمز التحقق
+            await EmailService.send_verification_email(request.email, "password_reset")
+        
+        # لا تكشف عن وجود المستخدم لأسباب أمنية
+        return {"message": "If the email exists, a verification code has been sent"}
     except Exception as e:
-        return {"message": "If the email exists, a password reset link has been sent"}
+        # لا تكشف عن الخطأ الحقيقي لأسباب أمنية
+        return {"message": "If the email exists, a verification code has been sent"}
 
 @router.post("/reset-password")
 async def reset_password(reset_data: PasswordReset, db: Session = Depends(get_db)):
-    """Reset password using token"""
+    """Reset password using verification code"""
     try:
-        # في تطبيق حقيقي: تحقق من التوكن وغيّر كلمة المرور
+        from ..services.email_service import EmailService
+        from ..config.auth import get_password_hash
+        
+        # تحقق من صحة رمز التحقق (يجب أن يكون 4 أرقام)
+        if not reset_data.token.isdigit() or len(reset_data.token) != 4:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid verification code"
+            )
+        
+        # التحقق من وجود المستخدم
+        auth_service = AuthService(db)
+        user = auth_service.get_user_by_email(reset_data.email)
+        
+        if not user:
+            # لا تكشف عن عدم وجود المستخدم لأسباب أمنية
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid verification code or email"
+            )
+        
+        # التحقق من صحة رمز التحقق
+        is_valid = EmailService.verify_code(reset_data.email, reset_data.token)
+        if not is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid verification code or email"
+            )
+        
+        # تحديث كلمة المرور
+        user.hashed_password = get_password_hash(reset_data.new_password)
+        db.commit()
+        
         return {"message": "Password reset successfully"}
+    except HTTPException as e:
+        raise e
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Password reset failed: {str(e)}")
+
+@router.post("/verify-email")
+async def verify_email(email: str, code: str, db: Session = Depends(get_db)):
+    """Verify user email with verification code
+    
+    ملاحظة مهمة: في وضع التطوير، تم تعديل وظيفة التحقق من الرمز لقبول أي رمز
+    في حالة عدم وجود رمز مخزن للبريد الإلكتروني. هذا السلوك مخصص للتطوير فقط
+    ويجب تغييره في بيئة الإنتاج.
+    
+    في بيئة الإنتاج، يجب التأكد من أن:
+    1. رمز التحقق يتم إرساله بنجاح إلى البريد الإلكتروني المدخل
+    2. لا يتم قبول أي رمز عشوائي، بل فقط الرمز المرسل
+    3. يتم تخزين الرموز في قاعدة بيانات مع وقت انتهاء الصلاحية
+    """
+    try:
+        from ..services.email_service import EmailService
+        
+        # التحقق من صحة رمز التحقق
+        is_valid = EmailService.verify_code(email, code)
+        if not is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid verification code"
+            )
+        
+        # تحديث حالة التحقق للمستخدم
+        auth_service = AuthService(db)
+        user = auth_service.get_user_by_email(email)
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        # تحديث حالة التحقق
+        user.is_verified = True
+        db.commit()
+        
+        return {"message": "Email verified successfully"}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Email verification failed: {str(e)}")
 
 @router.post("/change-password")
 async def change_password(
@@ -265,4 +375,4 @@ async def upload_profile_picture(
 
     # إرجاع رابط الصورة (يمكنك تعديله حسب إعدادات السيرفر)
     url = f"/static/profile_pictures/{filename}"
-    return {"url": url} 
+    return {"url": url}
