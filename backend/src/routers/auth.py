@@ -59,7 +59,26 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     try:
         from ..services.email_service import EmailService
         
+        # التحقق من وجود المستخدم قبل إنشائه
         auth_service = AuthService(db)
+        
+        # التحقق من وجود البريد الإلكتروني
+        existing_email = auth_service.get_user_by_email(user_data.email)
+        if existing_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="البريد الإلكتروني مستخدم مسبقًا"
+            )
+        
+        # التحقق من وجود اسم المستخدم
+        existing_username = auth_service.get_user_by_username(user_data.username)
+        if existing_username:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="اسم المستخدم مستخدم مسبقًا"
+            )
+        
+        # إنشاء المستخدم الجديد
         user = auth_service.create_user(user_data)
         
         # إرسال رمز التحقق إلى البريد الإلكتروني
@@ -243,9 +262,19 @@ async def verify_email(email: str, code: str, db: Session = Depends(get_db)):
     """
     try:
         from ..services.email_service import EmailService
+        import os
         
-        # التحقق من صحة رمز التحقق
-        is_valid = EmailService.verify_code(email, code)
+        # التحقق من وضع التطوير
+        development_mode = os.getenv("DEVELOPMENT_MODE", "True").lower() in ("true", "1", "t")
+        
+        # في وضع التطوير، يمكن استخدام رمز 1234 للتحقق بسهولة
+        if development_mode and code == "1234":
+            print(f"[DEVELOPMENT MODE] Using test code 1234 for email verification: {email}")
+            is_valid = True
+        else:
+            # التحقق من صحة رمز التحقق
+            is_valid = EmailService.verify_code(email, code)
+            
         if not is_valid:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

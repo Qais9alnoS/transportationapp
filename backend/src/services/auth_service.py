@@ -18,21 +18,6 @@ class AuthService:
     def create_user(self, user_data: UserCreate) -> User:
         """Create a new user with email/password authentication"""
         try:
-            # Check if user already exists
-            existing_user = self.db.query(User).filter(
-                (User.email == user_data.email) | (User.username == user_data.username)
-            ).first()
-            if existing_user:
-                if existing_user.email == user_data.email:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="البريد الإلكتروني مستخدم مسبقًا"
-                    )
-                else:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="اسم المستخدم مستخدم مسبقًا"
-                    )
             # Create new user
             hashed_password = get_password_hash(user_data.password)
             db_user = User(

@@ -4,32 +4,33 @@ import string
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
 from pydantic import EmailStr
 from typing import Dict, Any
-from ..config.dashboard_config import get_dashboard_config
 
-# الحصول على إعدادات SMTP من ملف التكوين
-config = get_dashboard_config()
-smtp_settings = config["notifications"]["email"]
+# الحصول على إعدادات SMTP من متغيرات البيئة
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "transportationapp.dev@gmail.com")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "app_password_here")
 
-# التحقق من وضع التطوير
-DEVELOPMENT_MODE = smtp_settings.get("development_mode", False)
+# التحقق من وضع التطوير من متغيرات البيئة
+DEVELOPMENT_MODE = os.getenv("DEVELOPMENT_MODE", "True").lower() in ("true", "1", "t")
 
 # تكوين اتصال البريد الإلكتروني
 mail_config = ConnectionConfig(
-    MAIL_USERNAME=smtp_settings["smtp_user"],
-    MAIL_PASSWORD=smtp_settings["smtp_password"],
+    MAIL_USERNAME=SMTP_USER,
+    MAIL_PASSWORD=SMTP_PASSWORD,
     MAIL_FROM="noreply@transportationapp.com",  # يمكن تغييره حسب الحاجة
-    MAIL_PORT=smtp_settings["smtp_port"],
-    MAIL_SERVER=smtp_settings["smtp_host"],
-    MAIL_SSL_TLS=True,
-    MAIL_STARTTLS=False,
+    MAIL_PORT=SMTP_PORT,
+    MAIL_SERVER=SMTP_HOST,
+    MAIL_SSL_TLS=False,
+    MAIL_STARTTLS=True,
     USE_CREDENTIALS=True,
     VALIDATE_CERTS=True
 )
 
 print(f"Email configuration: Development mode = {DEVELOPMENT_MODE}")
-print(f"SMTP settings: {smtp_settings['smtp_host']}:{smtp_settings['smtp_port']}")
-print(f"SMTP user: {smtp_settings['smtp_user']}")
-print(f"SMTP password: {'*' * 8 if smtp_settings['smtp_password'] else 'Not set'}")
+print(f"SMTP settings: {SMTP_HOST}:{SMTP_PORT}")
+print(f"SMTP user: {SMTP_USER}")
+print(f"SMTP password: {'*' * 8 if SMTP_PASSWORD else 'Not set'}")
 
 
 # قاموس لتخزين رموز التحقق المؤقتة
